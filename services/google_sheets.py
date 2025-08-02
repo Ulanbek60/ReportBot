@@ -2,15 +2,15 @@ from datetime import datetime
 import os
 import json
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials  # ✅ НОВОЕ
 from gspread.exceptions import WorksheetNotFound
 from config import GSHEET_NAME
 import requests
 
-# === Webhook URL для добавления выпадающих списков статуса ===
-WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbx-UZRnOL5oDstXS4bK8dxCXlG5TaCV5BdT-QdH7ncCgaQBA0JYrjfZurWikPVHG5G9kw/exec"
+# === Webhook URL для выпадающих статусов
+WEBHOOK_URL = "https://script.google.com/macros/s/YOUR_WEBHOOK_ID/exec"
 
-# === Авторизация через JSON-ключ, полученный из ENV ===
+# === Авторизация
 scope = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
@@ -18,13 +18,13 @@ scope = [
 
 json_data = os.getenv("GOOGLE_CREDENTIALS_JSON")
 if not json_data:
-    raise Exception("❌ GOOGLE_CREDENTIALS_JSON не найден в переменных окружения!")
+    raise Exception("❌ GOOGLE_CREDENTIALS_JSON не найден!")
 
 try:
     creds_dict = json.loads(json_data)
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scope)  # ✅ фикс
 except json.JSONDecodeError:
-    raise Exception("❌ Ошибка декодирования GOOGLE_CREDENTIALS_JSON — проверь JSON формат!")
+    raise Exception("❌ GOOGLE_CREDENTIALS_JSON — невалидный JSON!")
 
 client = gspread.authorize(creds)
 
