@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3
+*.env
+
+# IDE
+*.vscode/
+*.idea/
+*.DS_Store
+
+# Secrets
+client_secrets.json
+credentials.json
+google_credentials.json
+config.py
+
+# Personal data
+/data/
