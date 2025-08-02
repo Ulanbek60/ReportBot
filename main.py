@@ -17,6 +17,7 @@ from services.google_sheets import append_to_sheet, is_report_already_submitted
 from services.notifier import notify_owner
 from services.google_drive import upload_photo_with_folder as upload_photo_to_drive
 from datetime import datetime, timedelta
+import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import os
 import html
@@ -108,7 +109,8 @@ async def skip_photo(callback: CallbackQuery, state: FSMContext):
     await ask_for_date(callback.message, state)
 
 async def ask_for_date(msg: Message, state: FSMContext):
-    today = datetime.now().date()
+    kgt = pytz.timezone("Asia/Bishkek")
+    today = datetime.now(kgt).date()
     yesterday = today - timedelta(days=1)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
