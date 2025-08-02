@@ -19,6 +19,13 @@ from datetime import datetime, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import os
 import html
+import json
+
+# Восстановление google_credentials.json из переменной среды
+if os.getenv("GOOGLE_CREDENTIALS_JSON"):
+    with open("google_credentials.json", "w") as f:
+        json.dump(json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON")), f)
+
 
 class ReportStates(StatesGroup):
     idle = State()
