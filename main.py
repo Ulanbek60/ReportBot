@@ -14,17 +14,12 @@ import logging
 import config
 from services.google_sheets import append_to_sheet, is_report_already_submitted
 from services.notifier import notify_owner
-from services.photo_upload import upload_photo_to_drive
+from services.google_drive import upload_photo_with_folder as upload_photo_to_drive
 from datetime import datetime, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import os
 import html
 import json
-
-# Восстановление google_credentials.json из переменной среды
-if os.getenv("GOOGLE_CREDENTIALS_JSON"):
-    with open("google_credentials.json", "w") as f:
-        json.dump(json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON")), f)
 
 
 class ReportStates(StatesGroup):

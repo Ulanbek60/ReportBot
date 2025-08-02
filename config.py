@@ -1,13 +1,4 @@
 import os
-import json
-
-CREDENTIALS_FILE = "google_credentials.json"
-json_data = os.getenv("GOOGLE_CREDENTIALS_JSON")
-
-if json_data:
-    with open(CREDENTIALS_FILE, "w") as f:
-        f.write(json_data)
-
 from dotenv import load_dotenv
 load_dotenv()
 
