@@ -2,7 +2,7 @@ from datetime import datetime
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from gspread.exceptions import WorksheetNotFound
-from config import GOOGLE_CREDENTIALS_PATH, GSHEET_NAME
+from config import GSHEET_NAME
 import requests
 
 WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbx-UZRnOL5oDstXS4bK8dxCXlG5TaCV5BdT-QdH7ncCgaQBA0JYrjfZurWikPVHG5G9kw/exec"
@@ -28,8 +28,9 @@ scope = [
 ]
 
 creds = ServiceAccountCredentials.from_json_keyfile_name(
-    GOOGLE_CREDENTIALS_PATH, scope
+    "google_credentials.json", scope
 )
+
 client = gspread.authorize(creds)
 
 HEADER = ["№", "Дата", "Доход", "7% инвестору", "Ссылка на фото", "Комментарий", "Статус"]
