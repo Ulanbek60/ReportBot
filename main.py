@@ -1,111 +1,213 @@
-from datetime import datetime
+# main.py
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message, CallbackQuery
+from aiogram.enums import ParseMode
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.strategy import FSMStrategy
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram import Router
+from aiogram.client.default import DefaultBotProperties
+from aiogram.filters import CommandStart
+import asyncio
+import logging
+import config
+from services.google_sheets import append_to_sheet, is_report_already_submitted
+from services.notifier import notify_owner
+from services.google_drive import upload_photo_with_folder as upload_photo_to_drive
+from datetime import datetime, timedelta
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import os
+import html
 import json
-import gspread
-from google.oauth2.service_account import Credentials  # ✅ НОВОЕ
-from gspread.exceptions import WorksheetNotFound
-from config import GSHEET_NAME
-import requests
 
-# === Webhook URL для выпадающих статусов
-WEBHOOK_URL = "https://script.google.com/macros/s/YOUR_WEBHOOK_ID/exec"
-
-# === Авторизация
-scope = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive"
-]
-
+# 🔐 Автоматическое создание service_account.json из GitHub Secret
 json_data = os.getenv("GOOGLE_CREDENTIALS_JSON")
-if not json_data:
-    raise Exception("❌ GOOGLE_CREDENTIALS_JSON не найден!")
+if json_data:
+    with open("google_credentials.json", "w") as f:
+        f.write(json_data)
 
-try:
-    creds_dict = json.loads(json_data)
-    creds = Credentials.from_service_account_info(creds_dict, scopes=scope)  # ✅ фикс
-except json.JSONDecodeError:
-    raise Exception("❌ GOOGLE_CREDENTIALS_JSON — невалидный JSON!")
+class ReportStates(StatesGroup):
+    idle = State()
+    waiting_for_income = State()
+    waiting_for_photo = State()
+    waiting_for_date = State()
+    waiting_for_comment = State()
+    waiting_for_investor_message = State()
 
-client = gspread.authorize(creds)
+router = Router()
 
-# === Заголовки таблицы ===
-HEADER = ["№", "Дата", "Доход", "7% инвестору", "Ссылка на фото", "Комментарий", "Статус"]
+@router.message(CommandStart())
+async def start_command(msg: Message, state: FSMContext):
+    kb = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="▶️ Старт")]], resize_keyboard=True
+    )
+    await msg.answer("👋 Добро пожаловать! Нажми кнопку ниже, чтобы начать.", reply_markup=kb)
+    await state.set_state(ReportStates.idle)
 
-# === Вспомогательная функция для добавления выпадающих статусов ===
-def trigger_status_dropdown(sheet_name: str):
+@router.message(F.text == "▶️ Старт")
+async def start_pressed(msg: Message, state: FSMContext):
+    kb_buttons = [[KeyboardButton(text="📄 Отправить отчет")]]
+    if str(msg.from_user.id) == os.getenv("INVESTOR_ID"):
+        kb_buttons.append([KeyboardButton(text="📨 Отправить сообщение владельцу")])
+    kb = ReplyKeyboardMarkup(keyboard=kb_buttons, resize_keyboard=True)
+    await msg.answer("✅ Отлично! Выбери действие:", reply_markup=kb)
+
+@router.message(lambda msg: msg.text and "Отправить отчет" in msg.text)
+async def report_entry(msg: Message, state: FSMContext):
+    await msg.answer("💰 Введите сумму дохода за сегодня:")
+    await state.set_state(ReportStates.waiting_for_income)
+
+@router.message(lambda msg: msg.text and "Отправить сообщение владельцу" in msg.text)
+async def investor_message_start(msg: Message, state: FSMContext):
+    if str(msg.from_user.id) != os.getenv("INVESTOR_ID"):
+        await msg.answer("❌ У вас нет прав для этой команды.")
+        return
+    await msg.answer("✏️ Напишите сообщение, которое будет отправлено владельцу кафе:")
+    await state.set_state(ReportStates.waiting_for_investor_message)
+
+@router.message(ReportStates.waiting_for_investor_message)
+async def receive_investor_message(msg: Message, state: FSMContext):
+    owner_id = int(os.getenv("OWNER_ID"))
+    await msg.bot.send_message(owner_id, f"📨 <b>Сообщение от инвестора:</b>\n{html.escape(msg.text)}", parse_mode="HTML")
+    await msg.answer("✅ Сообщение отправлено владельцу кафе")
+    await state.set_state(ReportStates.idle)
+
+@router.message(ReportStates.waiting_for_income)
+async def get_income(msg: Message, state: FSMContext):
     try:
-        response = requests.post(WEBHOOK_URL, json={"sheet_name": sheet_name})
-        if response.status_code == 200:
-            print(f"✅ Webhook выполнен: {response.text}")
-        else:
-            print(f"❌ Ошибка webhook: {response.status_code} — {response.text}")
-    except Exception as e:
-        print(f"⚠️ Ошибка при вызове webhook: {e}")
+        income = float(msg.text)
+        await state.update_data(income=income)
 
-# === Получить или создать лист Google Sheets ===
-def get_or_create_sheet(sheet_title: str):
-    try:
-        sheet = client.open(GSHEET_NAME).worksheet(sheet_title)
-    except WorksheetNotFound:
-        sheet = client.open(GSHEET_NAME).add_worksheet(title=sheet_title, rows="1000", cols="10")
-        sheet.append_row(HEADER)
-        sheet.format("A1:G1", {
-            "backgroundColor": {"red": 0.7, "green": 0.9, "blue": 0.8},
-            "horizontalAlignment": "CENTER",
-            "textFormat": {"bold": True}
-        })
-        trigger_status_dropdown(sheet_title)
-    return sheet
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📷❌Без фото", callback_data="skip_photo")]
+        ])
+        await msg.answer("📷 Теперь отправьте фото отчета", reply_markup=kb)
+        await state.set_state(ReportStates.waiting_for_photo)
+    except ValueError:
+        await msg.answer("❌ Введите цифру дохода")
 
-# === Добавить отчёт в таблицу ===
-def append_to_sheet(date, income, percent, photo_url, comment):
-    sheet_title = date_str_to_month(date)
-    sheet = get_or_create_sheet(sheet_title)
+@router.message(ReportStates.waiting_for_photo)
+async def get_photo(msg: Message, state: FSMContext, bot: Bot):
+    if not msg.photo:
+        return await msg.answer("❌ Это не фото. Пожалуйста, отправьте фото или нажмите кнопку \"Отправить без фото\".")
 
-    all_values = sheet.get_all_values()
-    for i, row in enumerate(all_values, start=1):
-        if row and row[0].strip().lower() == "итого:":
-            sheet.delete_rows(i)
-            break
+    photo = msg.photo[-1]
+    file = await bot.get_file(photo.file_id)
+    photo_path = f"data/report_{msg.chat.id}_{photo.file_id}.jpg"
+    await bot.download_file(file.file_path, photo_path)
+    await state.update_data(photo_path=photo_path)
 
-    data_start_row = 2
-    next_row_index = len(all_values) + 1 if len(all_values) >= data_start_row else data_start_row
+    await ask_for_date(msg, state)
 
-    new_row = [
-        str(next_row_index - 1),
-        date,
-        income,
-        percent,
-        photo_url,
-        comment,
-        ""
+@router.callback_query(F.data == "skip_photo")
+async def skip_photo(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(photo_path=None)
+    await callback.answer()
+    await ask_for_date(callback.message, state)
+
+async def ask_for_date(msg: Message, state: FSMContext):
+    today = datetime.now().date()
+    yesterday = today - timedelta(days=1)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"📅 Сегодня ({today.strftime('%d.%m.%Y')})", callback_data="date_today")],
+        [InlineKeyboardButton(text=f"📆 Вчера ({yesterday.strftime('%d.%m.%Y')})", callback_data="date_yesterday")]
+    ])
+    await msg.answer("📆 Укажите, за какой день отчёт:", reply_markup=kb)
+    await state.set_state(ReportStates.waiting_for_date)
+
+@router.callback_query(F.data.in_(["date_today", "date_yesterday"]))
+async def handle_date(callback: CallbackQuery, state: FSMContext):
+    choice = callback.data
+    report_date = datetime.now().date() if choice == "date_today" else datetime.now().date() - timedelta(days=1)
+    report_date_str = report_date.strftime("%d.%m.%Y")
+
+    if is_report_already_submitted(report_date_str):
+        await callback.message.answer("⚠️ Отчёт за эту дату уже был отправлен. Повторная отправка невозможна.")
+        await state.set_state(ReportStates.idle)
+        return
+
+    await state.update_data(report_date=report_date_str)
+    await callback.message.answer("✍️ Напишите комментарий или нажмите кнопку ниже:", reply_markup=
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✉️ Отправить без комментария", callback_data="skip_comment")]
+        ])
+    )
+    await callback.answer()
+    await state.set_state(ReportStates.waiting_for_comment)
+
+@router.callback_query(F.data == "skip_comment")
+async def skip_comment(callback: CallbackQuery, state: FSMContext):
+    await save_report(callback.message, state, comment="—")
+    await callback.message.answer("✅ Отчёт отправлен инвестору")
+    await state.set_state(ReportStates.idle)
+    await callback.answer()
+
+@router.message(ReportStates.waiting_for_comment)
+async def get_comment(msg: Message, state: FSMContext):
+    await save_report(msg, state, comment=msg.text)
+    await msg.answer("✅ Отчёт отправлен инвестору")
+    await state.set_state(ReportStates.idle)
+
+async def save_report(msg, state, comment: str):
+    data = await state.get_data()
+    income = data.get("income")
+    photo_path = data.get("photo_path")
+    report_date = data.get("report_date")
+    percent = round(income * 0.07, 2)
+    drive_url = "—"
+
+    if photo_path:
+        try:
+            drive_url = upload_photo_to_drive(photo_path, report_date)
+        except Exception as e:
+            error_msg = html.escape(str(e))
+            await msg.answer(f"❌ Ошибка при загрузке фото:\n<pre>{error_msg}</pre>", parse_mode="HTML")
+
+    append_to_sheet(report_date, income, percent, drive_url, comment)
+
+    await msg.bot.send_message(
+        int(os.getenv("INVESTOR_ID")),
+        f"📥 <b>Отчёт от владельца кафе:</b>\n"
+        f"📅 <b>Дата:</b> {report_date}\n"
+        f"💰 <b>Доход:</b> {income} сом\n"
+        f"📊 <b>7% инвестору:</b> {percent} сом\n"
+        f"🖼️ <b>Фото:</b> {drive_url}\n"
+        f"💬 <b>Комментарий:</b> {comment or '—'}",
+        parse_mode="HTML"
+    )
+
+@router.message()
+async def unknown_input(msg: Message, state: FSMContext):
+    current_state = await state.get_state()
+    allowed_states = [
+        ReportStates.waiting_for_income.state,
+        ReportStates.waiting_for_photo.state,
+        ReportStates.waiting_for_comment.state,
+        ReportStates.waiting_for_date.state,
+        ReportStates.waiting_for_investor_message.state
     ]
-    sheet.insert_row(new_row, next_row_index)
+    allowed_texts = ["📄 Отправить отчет", "▶️ Старт", "📨 Отправить сообщение владельцу"]
 
-    total_row_index = len(sheet.get_all_values()) + 2
-    sheet.update(f"A{total_row_index}", [["ИТОГО:"]])
-    sheet.update_acell(f"C{total_row_index}", f"=SUM(C2:C{total_row_index - 2})")
-    sheet.update_acell(f"D{total_row_index}", f"=SUM(D2:D{total_row_index - 2})")
+    if msg.text in allowed_texts or current_state in allowed_states:
+        return
 
-    sheet.format(f"A{total_row_index}:G{total_row_index}", {
-        "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9},
-        "textFormat": {"bold": True},
-        "horizontalAlignment": "CENTER"
-    })
+    await msg.answer("❌ Пожалуйста, пользуйтесь кнопками. Текст здесь не нужен.")
 
-# === Проверка — был ли уже отчёт за конкретную дату ===
-def is_report_already_submitted(date_str: str) -> bool:
-    try:
-        sheet = client.open(GSHEET_NAME).worksheet(date_str_to_month(date_str))
-        data = sheet.get_all_values()
-        for row in data[1:]:
-            if len(row) > 1 and row[1].strip() == date_str:
-                return True
-        return False
-    except WorksheetNotFound:
-        return False
+async def main():
+    logging.basicConfig(level=logging.INFO)
+    bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    dp = Dispatcher(storage=MemoryStorage(), fsm_strategy=FSMStrategy.CHAT)
+    dp.include_router(router)
 
-# === Получить месяц из даты (на англ.) ===
-def date_str_to_month(date_str: str) -> str:
-    date_obj = datetime.strptime(date_str, "%d.%m.%Y")
-    return date_obj.strftime("%B")
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(notify_owner, 'cron', hour=21, minute=0, args=[bot])
+    scheduler.start()
+
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())

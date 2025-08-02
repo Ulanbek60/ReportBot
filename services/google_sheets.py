@@ -1,39 +1,36 @@
 from datetime import datetime
 import os
 import json
-import base64
 import gspread
-import requests
 from google.oauth2.service_account import Credentials
 from gspread.exceptions import WorksheetNotFound
 from config import GSHEET_NAME
+import requests
 
-# === Webhook URL для выпадающих статусов ===
+# === Webhook URL для выпадающих статусов
 WEBHOOK_URL = "https://script.google.com/macros/s/YOUR_WEBHOOK_ID/exec"
 
-# === Авторизация ===
+# === Авторизация
 scope = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
 
-json_base64 = os.getenv("GOOGLE_CREDENTIALS_JSON")
-if not json_base64:
-    raise Exception("❌ Переменная GOOGLE_CREDENTIALS_JSON не найдена!")
+# ✅ Гибкий способ: Railway + локальный fallback
+json_data = os.getenv("GOOGLE_CREDENTIALS_JSON")
+if json_data:
+    creds_dict = json.loads(json_data)
+else:
+    with open("google_credentials.json") as f:
+        creds_dict = json.load(f)
 
-try:
-    json_str = base64.b64decode(json_base64).decode("utf-8")
-    creds_dict = json.loads(json_str)
-    creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
-except Exception as e:
-    raise Exception(f"❌ Ошибка при расшифровке GOOGLE_CREDENTIALS_JSON: {e}")
-
+creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
 client = gspread.authorize(creds)
 
 # === Заголовки таблицы ===
 HEADER = ["№", "Дата", "Доход", "7% инвестору", "Ссылка на фото", "Комментарий", "Статус"]
 
-# === Добавление выпадающих статусов ===
+# === Вспомогательная функция для добавления выпадающих статусов ===
 def trigger_status_dropdown(sheet_name: str):
     try:
         response = requests.post(WEBHOOK_URL, json={"sheet_name": sheet_name})
@@ -95,7 +92,7 @@ def append_to_sheet(date, income, percent, photo_url, comment):
         "horizontalAlignment": "CENTER"
     })
 
-# === Проверка: был ли уже отчёт за конкретную дату ===
+# === Проверка — был ли уже отчёт за конкретную дату ===
 def is_report_already_submitted(date_str: str) -> bool:
     try:
         sheet = client.open(GSHEET_NAME).worksheet(date_str_to_month(date_str))
@@ -107,7 +104,7 @@ def is_report_already_submitted(date_str: str) -> bool:
     except WorksheetNotFound:
         return False
 
-# === Получить месяц из даты (англ.) ===
+# === Получить месяц из даты (на англ.) ===
 def date_str_to_month(date_str: str) -> str:
     date_obj = datetime.strptime(date_str, "%d.%m.%Y")
     return date_obj.strftime("%B")

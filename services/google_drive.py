@@ -1,53 +1,46 @@
-from datetime import datetime
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
-from google.oauth2.service_account import Credentials
 import os
 import json
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
 
-# Авторизация через переменную окружения
-SCOPES = ["https://www.googleapis.com/auth/drive"]
-
+# === Авторизация
+scope = ["https://www.googleapis.com/auth/drive"]
 json_data = os.getenv("GOOGLE_CREDENTIALS_JSON")
-if not json_data:
-    raise Exception("❌ Переменная GOOGLE_CREDENTIALS_JSON не найдена!")
 
-try:
+if json_data:
     creds_dict = json.loads(json_data)
-    creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-except json.JSONDecodeError:
-    raise Exception("❌ GOOGLE_CREDENTIALS_JSON содержит некорректный JSON")
+else:
+    with open("google_credentials.json") as f:
+        creds_dict = json.load(f)
 
+creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
 drive_service = build("drive", "v3", credentials=creds)
 
-# === Создание или получение папки по месяцу ===
-def get_or_create_month_folder(report_date: str):
-    dt = datetime.strptime(report_date, "%d.%m.%Y")
-    folder_name = dt.strftime("%B").capitalize()
-
-    query = f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and trashed=false"
-    results = drive_service.files().list(q=query, spaces="drive", fields="files(id, name)").execute()
+# === Создание папки по названию (месяц)
+def get_or_create_month_folder(name: str) -> str:
+    query = f"mimeType='application/vnd.google-apps.folder' and name='{name}' and trashed=false"
+    results = drive_service.files().list(q=query, fields="files(id, name)").execute()
     folders = results.get("files", [])
 
     if folders:
         return folders[0]["id"]
 
-    file_metadata = {
-        "name": folder_name,
-        "mimeType": "application/vnd.google-apps.folder",
-    }
-    folder = drive_service.files().create(body=file_metadata, fields="id").execute()
+    folder_metadata = {"name": name, "mimeType": "application/vnd.google-apps.folder"}
+    folder = drive_service.files().create(body=folder_metadata, fields="id").execute()
     return folder["id"]
 
-# === Загрузка фото с привязкой к месяцу ===
+# === Загрузка фото в Google Drive + получение ссылки
 def upload_photo_with_folder(filepath: str, report_date: str) -> str:
-    folder_id = get_or_create_month_folder(report_date)
-    filename = os.path.basename(filepath)
+    folder_name = report_date.split(".")[1]  # месяц (например, "08")
+    folder_id = get_or_create_month_folder(folder_name)
+    filename = f"{report_date}_отчёт.jpg"
 
-    file_metadata = {"name": f"{report_date}_отчёт.jpg", "parents": [folder_id]}
+    file_metadata = {"name": filename, "parents": [folder_id]}
     media = MediaFileUpload(filepath, resumable=True)
     uploaded = drive_service.files().create(body=file_metadata, media_body=media, fields="id").execute()
 
+    # Сделать файл общедоступным
     drive_service.permissions().create(
         fileId=uploaded["id"],
         body={"role": "reader", "type": "anyone"}
