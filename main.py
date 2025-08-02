@@ -11,7 +11,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import CommandStart
 import asyncio
 import logging
-import config_example as config
+import config
 from services.google_sheets import append_to_sheet, is_report_already_submitted
 from services.notifier import notify_owner
 from services.photo_upload import upload_photo_to_drive
