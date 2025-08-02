@@ -15,7 +15,6 @@ __pycache__/
 client_secrets.json
 credentials.json
 google_credentials.json
-config.py
 
 # Personal data
 /data/
