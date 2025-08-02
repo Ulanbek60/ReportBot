@@ -1,23 +1,39 @@
 from datetime import datetime
+import os
+import json
+import base64
 import gspread
+import requests
 from google.oauth2.service_account import Credentials
 from gspread.exceptions import WorksheetNotFound
 from config import GSHEET_NAME
-import requests
 
-# === Авторизация через локальный файл
+# === Webhook URL для выпадающих статусов ===
+WEBHOOK_URL = "https://script.google.com/macros/s/YOUR_WEBHOOK_ID/exec"
+
+# === Авторизация ===
 scope = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
-creds = Credentials.from_service_account_file("service_account.json", scopes=scope)
+
+json_base64 = os.getenv("GOOGLE_CREDENTIALS_JSON")
+if not json_base64:
+    raise Exception("❌ Переменная GOOGLE_CREDENTIALS_JSON не найдена!")
+
+try:
+    json_str = base64.b64decode(json_base64).decode("utf-8")
+    creds_dict = json.loads(json_str)
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
+except Exception as e:
+    raise Exception(f"❌ Ошибка при расшифровке GOOGLE_CREDENTIALS_JSON: {e}")
+
 client = gspread.authorize(creds)
 
-# === Заголовки таблицы
+# === Заголовки таблицы ===
 HEADER = ["№", "Дата", "Доход", "7% инвестору", "Ссылка на фото", "Комментарий", "Статус"]
 
-WEBHOOK_URL = "https://script.google.com/macros/s/YOUR_WEBHOOK_ID/exec"
-
+# === Добавление выпадающих статусов ===
 def trigger_status_dropdown(sheet_name: str):
     try:
         response = requests.post(WEBHOOK_URL, json={"sheet_name": sheet_name})
@@ -28,6 +44,7 @@ def trigger_status_dropdown(sheet_name: str):
     except Exception as e:
         print(f"⚠️ Ошибка при вызове webhook: {e}")
 
+# === Получить или создать лист Google Sheets ===
 def get_or_create_sheet(sheet_title: str):
     try:
         sheet = client.open(GSHEET_NAME).worksheet(sheet_title)
@@ -42,6 +59,7 @@ def get_or_create_sheet(sheet_title: str):
         trigger_status_dropdown(sheet_title)
     return sheet
 
+# === Добавить отчёт в таблицу ===
 def append_to_sheet(date, income, percent, photo_url, comment):
     sheet_title = date_str_to_month(date)
     sheet = get_or_create_sheet(sheet_title)
@@ -77,6 +95,7 @@ def append_to_sheet(date, income, percent, photo_url, comment):
         "horizontalAlignment": "CENTER"
     })
 
+# === Проверка: был ли уже отчёт за конкретную дату ===
 def is_report_already_submitted(date_str: str) -> bool:
     try:
         sheet = client.open(GSHEET_NAME).worksheet(date_str_to_month(date_str))
@@ -88,6 +107,7 @@ def is_report_already_submitted(date_str: str) -> bool:
     except WorksheetNotFound:
         return False
 
+# === Получить месяц из даты (англ.) ===
 def date_str_to_month(date_str: str) -> str:
     date_obj = datetime.strptime(date_str, "%d.%m.%Y")
     return date_obj.strftime("%B")
