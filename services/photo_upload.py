@@ -1,63 +1,66 @@
 import os
 from datetime import datetime
-from pydrive.auth import GoogleAuth
-from pydrive.drive import GoogleDrive
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+
+# Указываем область доступа
+SCOPES = ["https://www.googleapis.com/auth/drive"]
+SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_CREDENTIALS_PATH", "service_account.json")
+ROOT_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")  # 📁 ID папки "CafeReportsUploads"
+
+# Авторизация
+creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+drive_service = build("drive", "v3", credentials=creds)
+
+def get_or_create_month_folder(report_date: str) -> str:
+    dt = datetime.strptime(report_date, "%d.%m.%Y")
+    month_name = dt.strftime("%B")
+
+    # Поиск папки внутри корневой
+    query = (
+        f"mimeType='application/vnd.google-apps.folder' and "
+        f"name='{month_name}' and '{ROOT_FOLDER_ID}' in parents and trashed=false"
+    )
+    response = drive_service.files().list(q=query, fields="files(id)").execute()
+    folders = response.get("files", [])
+
+    if folders:
+        return folders[0]["id"]
+
+    # Создание подпапки, если нет
+    metadata = {
+        "name": month_name,
+        "mimeType": "application/vnd.google-apps.folder",
+        "parents": [ROOT_FOLDER_ID]
+    }
+    folder = drive_service.files().create(body=metadata, fields="id").execute()
+    return folder["id"]
 
 def upload_photo_to_drive(photo_path: str, report_date: str) -> str:
-    # Авторизация
-    gauth = GoogleAuth()
-    gauth.LoadCredentialsFile("credentials.json")
-
-    if gauth.credentials is None:
-        gauth.LocalWebserverAuth()
-    elif gauth.access_token_expired:
-        gauth.Refresh()
-    else:
-        gauth.Authorize()
-
-    gauth.SaveCredentialsFile("credentials.json")
-    drive = GoogleDrive(gauth)
-
-    # Получаем месяц из report_date
-    dt = datetime.strptime(report_date, "%d.%m.%Y")
-    month_name = dt.strftime("%B")  # Например: August
-
-    # Ищем/создаем корневую папку
-    root_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-
-    # Ищем/создаем подпапку по месяцу в корневой папке
-    folder_id = None
-    folder_list = drive.ListFile({
-        'q': f"title='{month_name}' and mimeType='application/vnd.google-apps.folder' and '{root_folder_id}' in parents and trashed=false"
-    }).GetList()
-
-    if folder_list:
-        folder_id = folder_list[0]['id']
-    else:
-        folder_metadata = {
-            'title': month_name,
-            'mimeType': 'application/vnd.google-apps.folder',
-            'parents': [{'id': root_folder_id}]
-        }
-        folder = drive.CreateFile(folder_metadata)
-        folder.Upload()
-        folder_id = folder['id']
-
-    # Формируем имя файла по report_date с точным временем для уникальности
+    folder_id = get_or_create_month_folder(report_date)
     timestamp = datetime.now().strftime("%H-%M-%S")
-    file_title = f"{report_date}_отчёт_{timestamp}.jpg"
+    filename = f"{report_date}_отчёт_{timestamp}.jpg"
 
-    file = drive.CreateFile({
-        'title': file_title,
-        'parents': [{'id': folder_id}]
-    })
-    file.SetContentFile(photo_path)
-    file.Upload()
+    file_metadata = {
+        "name": filename,
+        "parents": [folder_id]
+    }
 
-    file.InsertPermission({
-        'type': 'anyone',
-        'value': 'anyone',
-        'role': 'reader'
-    })
+    media = MediaFileUpload(photo_path, resumable=True)
+    uploaded = drive_service.files().create(
+        body=file_metadata, media_body=media, fields="id"
+    ).execute()
 
-    return file['alternateLink']
+    # Делаем файл публичным
+    drive_service.permissions().create(
+        fileId=uploaded["id"],
+        body={"role": "reader", "type": "anyone"},
+    ).execute()
+
+    # Получаем ссылку
+    file = drive_service.files().get(
+        fileId=uploaded["id"], fields="webViewLink"
+    ).execute()
+
+    return file["webViewLink"]
