@@ -1,33 +1,33 @@
-from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, CallbackQuery
-from aiogram.enums import ParseMode
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.fsm.strategy import FSMStrategy
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram import Router
-from aiogram.client.default import DefaultBotProperties
-from aiogram.filters import CommandStart
 import asyncio
 import logging
+import signal
+import os
+from datetime import datetime, timedelta
+from aiogram import Bot, Dispatcher, F, Router
+from aiogram.enums import ParseMode
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.filters import CommandStart
+from aiogram.client.default import DefaultBotProperties
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+import pytz
+import html
 import config
 from services.google_sheets import append_to_sheet, is_report_already_submitted
 from services.notifier import notify_owner
 from services.google_drive import upload_photo_with_folder as upload_photo_to_drive
-from datetime import datetime, timedelta
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
-import pytz
-import os
-import html
+from services.inactivity_shutdown import inactivity_watcher, update_activity_timestamp
+from aiogram.fsm.strategy import FSMStrategy
+
 
 # 🔐 Автоматическое создание service_account.json (Railway only)
 json_data = os.getenv("GOOGLE_CREDENTIALS_JSON")
 if json_data:
     with open("service_account.json", "w") as f:
         f.write(json_data)
-
 
 class ReportStates(StatesGroup):
     idle = State()
@@ -39,50 +39,50 @@ class ReportStates(StatesGroup):
 
 router = Router()
 
-
 @router.message(CommandStart())
 async def start_command(msg: Message, state: FSMContext):
+    update_activity_timestamp()
     kb = ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="▶️ Старт")]], resize_keyboard=True
     )
     await msg.answer("👋 Добро пожаловать! Нажми кнопку ниже, чтобы начать.", reply_markup=kb)
     await state.set_state(ReportStates.idle)
 
-
 @router.message(F.text == "▶️ Старт")
 async def start_pressed(msg: Message, state: FSMContext):
+    update_activity_timestamp()
     kb_buttons = [[KeyboardButton(text="📄 Отправить отчет")]]
     if str(msg.from_user.id) == os.getenv("INVESTOR_ID"):
         kb_buttons.append([KeyboardButton(text="📨 Отправить сообщение владельцу")])
     kb = ReplyKeyboardMarkup(keyboard=kb_buttons, resize_keyboard=True)
     await msg.answer("✅ Отлично! Выбери действие:", reply_markup=kb)
 
-
 @router.message(lambda msg: msg.text and "Отправить отчет" in msg.text)
 async def report_entry(msg: Message, state: FSMContext):
+    update_activity_timestamp()
     await msg.answer("💰 Введите сумму дохода за сегодня:")
     await state.set_state(ReportStates.waiting_for_income)
 
-
 @router.message(lambda msg: msg.text and "Отправить сообщение владельцу" in msg.text)
 async def investor_message_start(msg: Message, state: FSMContext):
+    update_activity_timestamp()
     if str(msg.from_user.id) != os.getenv("INVESTOR_ID"):
         await msg.answer("❌ У вас нет прав для этой команды.")
         return
     await msg.answer("✏️ Напишите сообщение, которое будет отправлено владельцу кафе:")
     await state.set_state(ReportStates.waiting_for_investor_message)
 
-
 @router.message(ReportStates.waiting_for_investor_message)
 async def receive_investor_message(msg: Message, state: FSMContext):
+    update_activity_timestamp()
     owner_id = int(os.getenv("OWNER_ID"))
     await msg.bot.send_message(owner_id, f"📨 <b>Сообщение от инвестора:</b>\n{html.escape(msg.text)}", parse_mode="HTML")
     await msg.answer("✅ Сообщение отправлено владельцу кафе")
     await state.set_state(ReportStates.idle)
 
-
 @router.message(ReportStates.waiting_for_income)
 async def get_income(msg: Message, state: FSMContext):
+    update_activity_timestamp()
     try:
         income = float(msg.text)
         await state.update_data(income=income)
@@ -95,9 +95,9 @@ async def get_income(msg: Message, state: FSMContext):
     except ValueError:
         await msg.answer("❌ Введите цифру дохода")
 
-
 @router.message(ReportStates.waiting_for_photo)
 async def get_photo(msg: Message, state: FSMContext, bot: Bot):
+    update_activity_timestamp()
     if not msg.photo:
         return await msg.answer("❌ Это не фото. Пожалуйста, отправьте фото или нажмите кнопку \"Отправить без фото\".")
 
@@ -109,13 +109,12 @@ async def get_photo(msg: Message, state: FSMContext, bot: Bot):
 
     await ask_for_date(msg, state)
 
-
 @router.callback_query(F.data == "skip_photo")
 async def skip_photo(callback: CallbackQuery, state: FSMContext):
+    update_activity_timestamp()
     await state.update_data(photo_path=None)
     await callback.answer()
     await ask_for_date(callback.message, state)
-
 
 async def ask_for_date(msg: Message, state: FSMContext):
     today = datetime.now().date()
@@ -128,9 +127,9 @@ async def ask_for_date(msg: Message, state: FSMContext):
     await msg.answer("📆 Укажите, за какой день отчёт:", reply_markup=kb)
     await state.set_state(ReportStates.waiting_for_date)
 
-
 @router.callback_query(F.data.in_(["date_today", "date_yesterday"]))
 async def handle_date(callback: CallbackQuery, state: FSMContext):
+    update_activity_timestamp()
     choice = callback.data
     report_date = datetime.now().date() if choice == "date_today" else datetime.now().date() - timedelta(days=1)
     report_date_str = report_date.strftime("%d.%m.%Y")
@@ -149,21 +148,20 @@ async def handle_date(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.set_state(ReportStates.waiting_for_comment)
 
-
 @router.callback_query(F.data == "skip_comment")
 async def skip_comment(callback: CallbackQuery, state: FSMContext):
+    update_activity_timestamp()
     await save_report(callback.message, state, comment="—")
     await callback.message.answer("✅ Отчёт отправлен инвестору")
     await state.set_state(ReportStates.idle)
     await callback.answer()
 
-
 @router.message(ReportStates.waiting_for_comment)
 async def get_comment(msg: Message, state: FSMContext):
+    update_activity_timestamp()
     await save_report(msg, state, comment=msg.text)
     await msg.answer("✅ Отчёт отправлен инвестору")
     await state.set_state(ReportStates.idle)
-
 
 async def save_report(msg, state, comment: str):
     data = await state.get_data()
@@ -193,7 +191,6 @@ async def save_report(msg, state, comment: str):
         parse_mode="HTML"
     )
 
-
 @router.message()
 async def unknown_input(msg: Message, state: FSMContext):
     current_state = await state.get_state()
@@ -211,14 +208,14 @@ async def unknown_input(msg: Message, state: FSMContext):
 
     await msg.answer("❌ Пожалуйста, пользуйтесь кнопками. Текст здесь не нужен.")
 
-
 async def main():
     logging.basicConfig(level=logging.INFO)
     bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher(storage=MemoryStorage(), fsm_strategy=FSMStrategy.CHAT)
     dp.include_router(router)
 
-    # 🕒 Напоминание в 23:00 Бишкек
+    asyncio.create_task(inactivity_watcher())
+
     scheduler = AsyncIOScheduler()
     bishkek_tz = pytz.timezone("Asia/Bishkek")
     scheduler.add_job(notify_owner, CronTrigger(hour=23, minute=0, timezone=bishkek_tz), args=[bot])
@@ -227,6 +224,8 @@ async def main():
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
-
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        print("❌ Бот остановлен")
