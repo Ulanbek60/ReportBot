@@ -8,6 +8,9 @@ from config import GSHEET_NAME
 import requests
 import asyncio
 import signal
+from services.google_auth import get_google_credentials
+
+
 
 # === Webhook URL для выпадающих статусов
 WEBHOOK_URL = "https://script.google.com/macros/s/YOUR_WEBHOOK_ID/exec"
@@ -26,7 +29,7 @@ else:
     with open("google_credentials.json") as f:
         creds_dict = json.load(f)
 
-creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
+creds = get_google_credentials(scope)
 client = gspread.authorize(creds)
 
 # === Заголовки таблицы ===

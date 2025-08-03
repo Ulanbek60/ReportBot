@@ -1,37 +1,16 @@
 from datetime import datetime
-import os
-import json
 import gspread
-from google.oauth2.service_account import Credentials
+from oauth2client.service_account import ServiceAccountCredentials
 from gspread.exceptions import WorksheetNotFound
-from config import GSHEET_NAME
+from config import GOOGLE_CREDENTIALS_PATH, GSHEET_NAME
 import requests
 
-# === Webhook URL для выпадающих статусов
-WEBHOOK_URL = "https://script.google.com/macros/s/YOUR_WEBHOOK_ID/exec"
+WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbx-UZRnOL5oDstXS4bK8dxCXlG5TaCV5BdT-QdH7ncCgaQBA0JYrjfZurWikPVHG5G9kw/exec"
 
-# === Авторизация
-scope = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive"
-]
-
-# ✅ Гибкий способ: Railway + локальный fallback
-json_data = os.getenv("GOOGLE_CREDENTIALS_JSON")
-if json_data:
-    creds_dict = json.loads(json_data)
-else:
-    with open("google_credentials.json") as f:
-        creds_dict = json.load(f)
-
-creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
-client = gspread.authorize(creds)
-
-# === Заголовки таблицы ===
-HEADER = ["№", "Дата", "Доход", "7% инвестору", "Ссылка на фото", "Комментарий", "Статус"]
-
-# === Вспомогательная функция для добавления выпадающих статусов ===
 def trigger_status_dropdown(sheet_name: str):
+    """
+    Вызывает Apps Script webhook для добавления выпадающих статусов на лист Google Sheets
+    """
     try:
         response = requests.post(WEBHOOK_URL, json={"sheet_name": sheet_name})
         if response.status_code == 200:
@@ -41,7 +20,23 @@ def trigger_status_dropdown(sheet_name: str):
     except Exception as e:
         print(f"⚠️ Ошибка при вызове webhook: {e}")
 
-# === Получить или создать лист Google Sheets ===
+
+from google.oauth2.service_account import Credentials
+import gspread
+from gspread.exceptions import WorksheetNotFound
+from config import GOOGLE_CREDENTIALS_PATH, GSHEET_NAME
+import requests
+from datetime import datetime
+
+scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+
+creds = Credentials.from_service_account_file(
+    GOOGLE_CREDENTIALS_PATH, scopes=scope
+)
+client = gspread.authorize(creds)
+
+HEADER = ["№", "Дата", "Доход", "7% инвестору", "Ссылка на фото", "Комментарий", "Статус"]
+
 def get_or_create_sheet(sheet_title: str):
     try:
         sheet = client.open(GSHEET_NAME).worksheet(sheet_title)
@@ -53,22 +48,25 @@ def get_or_create_sheet(sheet_title: str):
             "horizontalAlignment": "CENTER",
             "textFormat": {"bold": True}
         })
+        # 👇 добавляем webhook
         trigger_status_dropdown(sheet_title)
+
     return sheet
 
-# === Добавить отчёт в таблицу ===
 def append_to_sheet(date, income, percent, photo_url, comment):
     sheet_title = date_str_to_month(date)
     sheet = get_or_create_sheet(sheet_title)
 
+    # Удаляем старую строку "ИТОГО:", если есть
     all_values = sheet.get_all_values()
     for i, row in enumerate(all_values, start=1):
         if row and row[0].strip().lower() == "итого:":
             sheet.delete_rows(i)
             break
 
+    values = sheet.get_all_values()
     data_start_row = 2
-    next_row_index = len(all_values) + 1 if len(all_values) >= data_start_row else data_start_row
+    next_row_index = len(values) + 1 if len(values) >= data_start_row else data_start_row
 
     new_row = [
         str(next_row_index - 1),
@@ -81,6 +79,7 @@ def append_to_sheet(date, income, percent, photo_url, comment):
     ]
     sheet.insert_row(new_row, next_row_index)
 
+    # Добавляем строку ИТОГО
     total_row_index = len(sheet.get_all_values()) + 2
     sheet.update(f"A{total_row_index}", [["ИТОГО:"]])
     sheet.update_acell(f"C{total_row_index}", f"=SUM(C2:C{total_row_index - 2})")
@@ -92,19 +91,19 @@ def append_to_sheet(date, income, percent, photo_url, comment):
         "horizontalAlignment": "CENTER"
     })
 
-# === Проверка — был ли уже отчёт за конкретную дату ===
+# 👉 Проверка, отправлялся ли отчёт уже
 def is_report_already_submitted(date_str: str) -> bool:
     try:
         sheet = client.open(GSHEET_NAME).worksheet(date_str_to_month(date_str))
         data = sheet.get_all_values()
-        for row in data[1:]:
+
+        for row in data[1:]:  # пропускаем заголовок
             if len(row) > 1 and row[1].strip() == date_str:
                 return True
         return False
     except WorksheetNotFound:
-        return False
+        return False  # Если листа ещё нет — отчёт точно не отправлялся
 
-# === Получить месяц из даты (на англ.) ===
 def date_str_to_month(date_str: str) -> str:
     date_obj = datetime.strptime(date_str, "%d.%m.%Y")
     return date_obj.strftime("%B")
