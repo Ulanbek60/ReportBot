@@ -65,3 +65,4 @@ def upload_photo_to_drive(photo_path: str, report_date: str) -> str:
     })
 
     return file['alternateLink']
+
