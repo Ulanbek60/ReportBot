@@ -15,7 +15,6 @@ __pycache__/
 client_secrets.json
 credentials.json
 service_account.json
-token.json
 
 # Personal data
 /data/
